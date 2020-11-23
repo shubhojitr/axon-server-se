@@ -23,6 +23,8 @@ import io.axoniq.axonserver.grpc.event.ReadHighestSequenceNrRequest;
 import io.axoniq.axonserver.grpc.event.ReadHighestSequenceNrResponse;
 import io.axoniq.axonserver.grpc.event.TrackingToken;
 import io.axoniq.axonserver.localstorage.SerializedEvent;
+import io.axoniq.axonserver.localstorage.file.EventStreamReadyHandler;
+import io.grpc.stub.CallStreamObserver;
 import io.grpc.stub.StreamObserver;
 
 import java.io.InputStream;
@@ -55,12 +57,15 @@ public interface EventStore {
 
     /**
      * Read events for an aggregate.
-     * @param context the context to read from
-     * @param request the request containing the aggregate identifier and read options
-     * @param responseStreamObserver {@link StreamObserver} where the events will be published
+     *
+     * @param context                 the context to read from
+     * @param request                 the request containing the aggregate identifier and read options
+     * @param responseStreamObserver  {@link StreamObserver} where the events will be published
+     * @param eventStreamReadyHandler
      */
     void listAggregateEvents(String context, GetAggregateEventsRequest request,
-                             StreamObserver<SerializedEvent> responseStreamObserver);
+                             CallStreamObserver<SerializedEvent> responseStreamObserver,
+                             EventStreamReadyHandler eventStreamReadyHandler);
 
     /**
      * Retrieves the Events from a given tracking token. Results are streamed rather than returned at once. Caller gets

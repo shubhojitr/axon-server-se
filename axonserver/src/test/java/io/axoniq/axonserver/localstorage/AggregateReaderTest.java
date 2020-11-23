@@ -21,8 +21,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static org.junit.Assert.*;
-
 /**
  * @author Marc Gathier
  */
@@ -97,7 +95,8 @@ public class AggregateReaderTest {
     public void readSnapshots() {
         List<Long> sequenceNumbers = new ArrayList<>();
         testSubject.readSnapshots("55", 10, 50, 10,
-                                  event -> sequenceNumbers.add(event.getAggregateSequenceNumber()));
+                                  new AggregateReader.SerializedEventCallStreamObserver(event -> sequenceNumbers
+                                          .add(event.getAggregateSequenceNumber())));
         Assert.assertEquals(2, sequenceNumbers.size());
     }
 
@@ -105,7 +104,8 @@ public class AggregateReaderTest {
     public void readAllSnapshots() {
         List<Long> sequenceNumbers = new ArrayList<>();
         testSubject.readSnapshots("55", 0, Long.MAX_VALUE, 0,
-                                  event -> sequenceNumbers.add(event.getAggregateSequenceNumber()));
+                                  new AggregateReader.SerializedEventCallStreamObserver(event -> sequenceNumbers
+                                          .add(event.getAggregateSequenceNumber())));
         Assert.assertEquals(4, sequenceNumbers.size());
     }
 

@@ -22,6 +22,7 @@ import io.axoniq.axonserver.localstorage.SerializedEventWithToken;
 import io.axoniq.axonserver.localstorage.SerializedTransactionWithToken;
 import io.axoniq.axonserver.metric.BaseMetricName;
 import io.axoniq.axonserver.metric.MeterFactory;
+import io.grpc.stub.CallStreamObserver;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
@@ -49,7 +50,6 @@ import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -111,27 +111,30 @@ public abstract class SegmentBasedEventStore implements EventStorageEngine {
 
     @Override
     public void processEventsPerAggregate(String aggregateId, long firstSequenceNumber, long lastSequenceNumber,
-                                          long minToken, Consumer<SerializedEvent> eventConsumer) {
+                                          long minToken, CallStreamObserver<SerializedEvent> eventConsumer,
+                                          EventStreamReadyHandler eventStreamReadyHandler) {
         long before = System.currentTimeMillis();
         SortedMap<Long, IndexEntries> positionInfos = indexManager.lookupAggregate(aggregateId,
                                                                                    firstSequenceNumber,
                                                                                    lastSequenceNumber,
                                                                                    Long.MAX_VALUE,
                                                                                    minToken);
-        positionInfos.forEach((segment, positionInfo) -> retrieveEventsForAnAggregate(segment,
-                                                                                      positionInfo.positions(),
-                                                                                      firstSequenceNumber,
-                                                                                      lastSequenceNumber,
-                                                                                      eventConsumer,
-                                                                                      Long.MAX_VALUE,
-                                                                                      minToken));
-        aggregateReadTimer.record(System.currentTimeMillis() - before, TimeUnit.MILLISECONDS);
+        FlowControlledEventSender flowControlledEventSender = new FlowControlledEventSender(eventConsumer,
+                                                                                            firstSequenceNumber,
+                                                                                            lastSequenceNumber,
+                                                                                            minToken,
+                                                                                            positionInfos,
+                                                                                            before,
+                                                                                            eventStreamReadyHandler);
+        eventStreamReadyHandler.setOnReady(flowControlledEventSender::start);
+        flowControlledEventSender.start();
     }
 
     @Override
     public void processEventsPerAggregateHighestFirst(String aggregateId, long firstSequenceNumber,
                                                       long maxSequenceNumber,
-                                                      int maxResults, Consumer<SerializedEvent> eventConsumer) {
+                                                      int maxResults,
+                                                      CallStreamObserver<SerializedEvent> eventConsumer) {
         SortedMap<Long, IndexEntries> positionInfos = indexManager.lookupAggregate(aggregateId,
                                                                                    firstSequenceNumber,
                                                                                    maxSequenceNumber,
@@ -144,16 +147,18 @@ public abstract class SegmentBasedEventStore implements EventStorageEngine {
             IndexEntries entries = positionInfos.get(segmentContainingAggregate);
             List<Integer> positions = new ArrayList<>(entries.positions());
             Collections.reverse(positions);
-            maxResults -= retrieveEventsForAnAggregate(segmentContainingAggregate,
-                                                       positions,
-                                                       firstSequenceNumber,
-                                                       maxSequenceNumber,
-                                                       eventConsumer,
-                                                       maxResults, 0);
+            retrieveEventsForAnAggregate(segmentContainingAggregate,
+                                         positions,
+                                         firstSequenceNumber,
+                                         maxSequenceNumber,
+                                         eventConsumer,
+                                         maxResults);
+            maxResults += positions.size();
             if (maxResults <= 0) {
                 return;
             }
         }
+        eventConsumer.onCompleted();
     }
 
 
@@ -425,35 +430,35 @@ public abstract class SegmentBasedEventStore implements EventStorageEngine {
 
     protected abstract void recreateIndex(long segment);
 
-    private int retrieveEventsForAnAggregate(long segment, List<Integer> indexEntries, long minSequenceNumber,
-                                             long maxSequenceNumber,
-                                             Consumer<SerializedEvent> onEvent, long maxResults, long minToken) {
+    private List<Integer> retrieveEventsForAnAggregate(long segment, List<Integer> indexEntries, long minSequenceNumber,
+                                                       long maxSequenceNumber,
+                                                       CallStreamObserver<SerializedEvent> onEvent, long maxResults) {
         Optional<EventSource> buffer = getEventSource(segment);
-        int processed = 0;
 
         if (buffer.isPresent()) {
             EventSource eventSource = buffer.get();
-            for (int i = 0; i < indexEntries.size() && i < maxResults; i++) {
-                SerializedEvent event = eventSource.readEvent(indexEntries.get(i));
+            ArrayList<Integer> writableIndexEntries = new ArrayList<>(indexEntries);
+            while (onEvent.isReady() && !writableIndexEntries.isEmpty()) {
+                int position = writableIndexEntries.remove(0);
+                SerializedEvent event = eventSource.readEvent(position);
                 if (event.getAggregateSequenceNumber() >= minSequenceNumber
                         && event.getAggregateSequenceNumber() < maxSequenceNumber) {
-                    onEvent.accept(event);
+                    onEvent.onNext(event);
                 }
-                processed++;
             }
+            return writableIndexEntries;
         } else {
             if (next != null) {
-                processed = next.retrieveEventsForAnAggregate(segment,
-                                                              indexEntries,
-                                                              minSequenceNumber,
-                                                              maxSequenceNumber,
-                                                              onEvent,
-                                                              maxResults,
-                                                              minToken);
+                return next.retrieveEventsForAnAggregate(segment,
+                                                         indexEntries,
+                                                         minSequenceNumber,
+                                                         maxSequenceNumber,
+                                                         onEvent,
+                                                         maxResults);
             }
         }
 
-        return processed;
+        return Collections.emptyList();
     }
 
     @Override
@@ -618,6 +623,64 @@ public abstract class SegmentBasedEventStore implements EventStorageEngine {
         public void close() {
             if (currentTransactionIterator != null) {
                 currentTransactionIterator.close();
+            }
+        }
+    }
+
+    private class FlowControlledEventSender {
+
+        private final CallStreamObserver<SerializedEvent> eventConsumer;
+        private final long firstSequenceNumber;
+        private final long lastSequenceNumber;
+        private final long minToken;
+        private final SortedMap<Long, IndexEntries> positionInfos;
+        private final long before;
+        private final EventStreamReadyHandler eventStreamReadyHandler;
+
+        public FlowControlledEventSender(CallStreamObserver<SerializedEvent> eventConsumer,
+                                         long firstSequenceNumber,
+                                         long lastSequenceNumber,
+                                         long minToken,
+                                         SortedMap<Long, IndexEntries> positionInfos,
+                                         long before,
+                                         EventStreamReadyHandler eventStreamReadyHandler) {
+            this.eventConsumer = eventConsumer;
+            this.firstSequenceNumber = firstSequenceNumber;
+            this.lastSequenceNumber = lastSequenceNumber;
+            this.minToken = minToken;
+            this.positionInfos = positionInfos;
+            this.before = before;
+            this.eventStreamReadyHandler = eventStreamReadyHandler;
+        }
+
+        public void start() {
+            try {
+                logger.warn("starting to write events, segments {}", positionInfos.size());
+                while (eventConsumer.isReady() && !positionInfos.isEmpty()) {
+                    long segment = positionInfos.firstKey();
+                    IndexEntries positionInfo = positionInfos.remove(segment);
+                    List<Integer> remainingPositions = retrieveEventsForAnAggregate(segment,
+                                                                                    positionInfo.positions(),
+                                                                                    firstSequenceNumber,
+                                                                                    lastSequenceNumber,
+                                                                                    eventConsumer,
+                                                                                    Long.MAX_VALUE);
+                    if (!remainingPositions.isEmpty()) {
+                        positionInfos.put(segment,
+                                          new StandardIndexEntries(positionInfo.firstSequenceNumber(),
+                                                                   remainingPositions));
+                    }
+                }
+                if (positionInfos.isEmpty()) {
+                    eventConsumer.onCompleted();
+                    aggregateReadTimer.record(System.currentTimeMillis() - before, TimeUnit.MILLISECONDS);
+                } else {
+                    eventStreamReadyHandler.setWasReady(false);
+                    logger.warn("stopping to write events, segments {}", positionInfos.size());
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                eventConsumer.onError(ex);
             }
         }
     }

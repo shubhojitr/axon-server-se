@@ -26,12 +26,14 @@ import io.axoniq.axonserver.grpc.event.QueryEventsResponse;
 import io.axoniq.axonserver.grpc.event.ReadHighestSequenceNrRequest;
 import io.axoniq.axonserver.grpc.event.ReadHighestSequenceNrResponse;
 import io.axoniq.axonserver.grpc.event.TrackingToken;
+import io.axoniq.axonserver.localstorage.file.EventStreamReadyHandler;
 import io.axoniq.axonserver.localstorage.query.QueryEventsRequestStreamObserver;
 import io.axoniq.axonserver.localstorage.transaction.StorageTransactionManagerFactory;
 import io.axoniq.axonserver.metric.BaseMetricName;
 import io.axoniq.axonserver.metric.DefaultMetricCollector;
 import io.axoniq.axonserver.metric.MeterFactory;
 import io.axoniq.axonserver.util.StreamObserverUtils;
+import io.grpc.stub.CallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -59,7 +61,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
@@ -295,23 +296,17 @@ public class LocalEventStore implements io.axoniq.axonserver.message.event.Event
 
     @Override
     public void listAggregateEvents(String context, GetAggregateEventsRequest request,
-                                    StreamObserver<SerializedEvent> responseStreamObserver) {
+                                    CallStreamObserver<SerializedEvent> responseStreamObserver,
+                                    EventStreamReadyHandler eventStreamReadyHandler) {
         runInDataFetcherPool(() -> {
-            AtomicInteger counter = new AtomicInteger();
             workers(context).aggregateReader.readEvents(request.getAggregateId(),
                                                         request.getAllowSnapshots(),
                                                         request.getInitialSequence(),
                                                         getMaxSequence(request),
                                                         request.getMinToken(),
-                                                        event -> {
-                                                            responseStreamObserver.onNext(eventDecorator
-                                                                                                  .decorateEvent(event));
-                                                            counter.incrementAndGet();
-                                                        });
-            if (counter.get() == 0) {
-                logger.debug("Aggregate not found: {}", request);
-            }
-            responseStreamObserver.onCompleted();
+                                                        responseStreamObserver,
+                                                        eventStreamReadyHandler)
+            ;
         }, responseStreamObserver::onError);
     }
 
@@ -360,10 +355,10 @@ public class LocalEventStore implements io.axoniq.axonserver.message.event.Event
                                                                request.getInitialSequence(),
                                                                request.getMaxSequence(),
                                                                request.getMaxResults(),
-                                                               snapshot -> responseStreamObserver
-                                                                       .onNext(eventDecorator.decorateEvent(snapshot)));
+                                                               (CallStreamObserver<SerializedEvent>) responseStreamObserver);
+            } else {
+                responseStreamObserver.onCompleted();
             }
-            responseStreamObserver.onCompleted();
         }, responseStreamObserver::onError);
     }
 

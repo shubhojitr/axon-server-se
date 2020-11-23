@@ -10,9 +10,9 @@
 package io.axoniq.axonserver.localstorage;
 
 import io.axoniq.axonserver.grpc.event.Event;
+import io.grpc.stub.CallStreamObserver;
 
 import java.util.Optional;
-import java.util.function.Consumer;
 
 /**
  * @author Marc Gathier
@@ -25,12 +25,13 @@ public class SnapshotReader {
     }
 
     public Optional<SerializedEvent> readSnapshot(String aggregateId, long minSequenceNumber) {
-            return datafileManagerChain
-                    .getLastEvent(aggregateId, minSequenceNumber)
-                    .map(s -> new SerializedEvent(Event.newBuilder(s.asEvent()).setSnapshot(true).build()));
+        return datafileManagerChain
+                .getLastEvent(aggregateId, minSequenceNumber)
+                .map(s -> new SerializedEvent(Event.newBuilder(s.asEvent()).setSnapshot(true).build()));
     }
 
-    public void streamByAggregateId(String aggregateId, long minSequenceNumber, long maxSequenceNumber, int maxResults, Consumer<SerializedEvent> eventConsumer) {
+    public void streamByAggregateId(String aggregateId, long minSequenceNumber, long maxSequenceNumber, int maxResults,
+                                    CallStreamObserver<SerializedEvent> eventConsumer) {
         datafileManagerChain.processEventsPerAggregateHighestFirst(aggregateId,
                                                                    minSequenceNumber,
                                                                    maxSequenceNumber,

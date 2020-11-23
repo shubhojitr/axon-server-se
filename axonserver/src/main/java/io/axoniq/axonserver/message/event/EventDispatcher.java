@@ -31,6 +31,7 @@ import io.axoniq.axonserver.grpc.event.ReadHighestSequenceNrRequest;
 import io.axoniq.axonserver.grpc.event.ReadHighestSequenceNrResponse;
 import io.axoniq.axonserver.grpc.event.TrackingToken;
 import io.axoniq.axonserver.localstorage.SerializedEvent;
+import io.axoniq.axonserver.localstorage.file.EventStreamReadyHandler;
 import io.axoniq.axonserver.message.ClientStreamIdentification;
 import io.axoniq.axonserver.metric.BaseMetricName;
 import io.axoniq.axonserver.metric.MeterFactory;
@@ -38,6 +39,7 @@ import io.axoniq.axonserver.topology.EventStoreLocator;
 import io.axoniq.axonserver.util.StreamObserverUtils;
 import io.grpc.MethodDescriptor;
 import io.grpc.protobuf.ProtoUtils;
+import io.grpc.stub.CallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import io.micrometer.core.instrument.Tags;
 import org.slf4j.Logger;
@@ -172,14 +174,17 @@ public class EventDispatcher implements AxonServerClientService {
                                     StreamObserver<SerializedEvent> responseObserver) {
         listAggregateEvents(contextProvider.getContext(),
                             request,
-                            new ForwardingStreamObserver<>(logger, "listAggregateEvents", responseObserver));
+                            responseObserver);
     }
 
     public void listAggregateEvents(String context, GetAggregateEventsRequest request,
                                     StreamObserver<SerializedEvent> responseObserver) {
         checkConnection(context, responseObserver).ifPresent(eventStore -> {
             try {
-                eventStore.listAggregateEvents(context, request, responseObserver);
+                CallStreamObserver<SerializedEvent> callStreamObserver = (CallStreamObserver<SerializedEvent>) responseObserver;
+                EventStreamReadyHandler eventStreamReadyHandler = new EventStreamReadyHandler(callStreamObserver);
+                callStreamObserver.setOnReadyHandler(eventStreamReadyHandler);
+                eventStore.listAggregateEvents(context, request, callStreamObserver, eventStreamReadyHandler);
             } catch (RuntimeException t) {
                 logger.warn(ERROR_ON_CONNECTION_FROM_EVENT_STORE, "listAggregateEvents", t.getMessage(), t);
                 responseObserver.onError(GrpcExceptionBuilder.build(t));

@@ -9,6 +9,9 @@
 
 package io.axoniq.axonserver.localstorage;
 
+import io.axoniq.axonserver.localstorage.file.EventStreamReadyHandler;
+import io.grpc.stub.CallStreamObserver;
+
 import java.util.Optional;
 import java.util.function.Consumer;
 
@@ -27,29 +30,52 @@ public class AggregateReader {
 
     public void readEvents(String aggregateId, boolean useSnapshots, long minSequenceNumber,
                            Consumer<SerializedEvent> eventConsumer) {
-        readEvents(aggregateId, useSnapshots, minSequenceNumber, Long.MAX_VALUE, 0, eventConsumer);
+        SerializedEventCallStreamObserver callStreamObserver = new SerializedEventCallStreamObserver(eventConsumer);
+        readEvents(aggregateId,
+                   useSnapshots,
+                   minSequenceNumber,
+                   Long.MAX_VALUE,
+                   0,
+                   callStreamObserver, new EventStreamReadyHandler(callStreamObserver));
     }
 
     public void readEvents(String aggregateId, boolean useSnapshots, long minSequenceNumber, long maxSequenceNumber,
                            long minToken,
                            Consumer<SerializedEvent> eventConsumer) {
+        SerializedEventCallStreamObserver callStreamObserver = new SerializedEventCallStreamObserver(eventConsumer);
+        readEvents(aggregateId,
+                   useSnapshots,
+                   minSequenceNumber,
+                   maxSequenceNumber,
+                   minToken,
+                   callStreamObserver, new EventStreamReadyHandler(callStreamObserver));
+    }
+
+    public void readEvents(String aggregateId, boolean useSnapshots, long minSequenceNumber, long maxSequenceNumber,
+                           long minToken,
+                           CallStreamObserver<SerializedEvent> eventConsumer,
+                           EventStreamReadyHandler eventStreamReadyHandler) {
         long actualMinSequenceNumber = minSequenceNumber;
         if (useSnapshots) {
             Optional<SerializedEvent> snapshot = snapshotReader.readSnapshot(aggregateId, minSequenceNumber);
             if (snapshot.isPresent()) {
-                eventConsumer.accept(snapshot.get());
+                eventConsumer.onNext(snapshot.get());
                 if (snapshot.get().getAggregateSequenceNumber() >= maxSequenceNumber) {
                     return;
                 }
                 actualMinSequenceNumber = snapshot.get().asEvent().getAggregateSequenceNumber() + 1;
             }
         }
-        eventStorageEngine.processEventsPerAggregate(aggregateId, actualMinSequenceNumber, maxSequenceNumber, minToken, eventConsumer);
-
+        eventStorageEngine.processEventsPerAggregate(aggregateId,
+                                                     actualMinSequenceNumber,
+                                                     maxSequenceNumber,
+                                                     minToken,
+                                                     eventConsumer,
+                                                     eventStreamReadyHandler);
     }
 
     public void readSnapshots(String aggregateId, long minSequenceNumber, long maxSequenceNumber, int maxResults,
-                              Consumer<SerializedEvent> eventConsumer) {
+                              CallStreamObserver<SerializedEvent> eventConsumer) {
         snapshotReader.streamByAggregateId(aggregateId, minSequenceNumber, maxSequenceNumber,
                                            maxResults > 0 ? maxResults : Integer.MAX_VALUE, eventConsumer);
     }
@@ -60,5 +86,54 @@ public class AggregateReader {
 
     public long readHighestSequenceNr(String aggregateId, int maxSegmentsHint, long maxTokenHint) {
         return eventStorageEngine.getLastSequenceNumber(aggregateId, maxSegmentsHint, maxTokenHint).orElse(-1L);
+    }
+
+    public static class SerializedEventCallStreamObserver extends CallStreamObserver<SerializedEvent> {
+
+        private final Consumer<SerializedEvent> eventConsumer;
+        private Runnable runnable;
+
+        public SerializedEventCallStreamObserver(Consumer<SerializedEvent> eventConsumer) {
+            this.eventConsumer = eventConsumer;
+        }
+
+        @Override
+        public boolean isReady() {
+            return true;
+        }
+
+        @Override
+        public void setOnReadyHandler(Runnable runnable) {
+            this.runnable = runnable;
+        }
+
+        @Override
+        public void disableAutoInboundFlowControl() {
+        }
+
+        @Override
+        public void request(int i) {
+        }
+
+        @Override
+        public void setMessageCompression(boolean b) {
+        }
+
+        @Override
+        public void onNext(SerializedEvent serializedEvent) {
+            eventConsumer.accept(serializedEvent);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+        }
+
+        @Override
+        public void onCompleted() {
+        }
+
+        public void ready() {
+            runnable.run();
+        }
     }
 }

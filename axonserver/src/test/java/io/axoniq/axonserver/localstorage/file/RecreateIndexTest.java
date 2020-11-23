@@ -1,6 +1,7 @@
 package io.axoniq.axonserver.localstorage.file;
 
 import io.axoniq.axonserver.config.SystemInfoProvider;
+import io.axoniq.axonserver.localstorage.AggregateReader;
 import io.axoniq.axonserver.localstorage.EventType;
 import io.axoniq.axonserver.localstorage.EventTypeContext;
 import io.axoniq.axonserver.localstorage.transformation.DefaultEventTransformerFactory;
@@ -71,8 +72,11 @@ public class RecreateIndexTest {
         assertEquals(6, files.size());
 
         AtomicInteger events = new AtomicInteger();
+        AggregateReader.SerializedEventCallStreamObserver eventConsumer = new AggregateReader.SerializedEventCallStreamObserver(
+                e -> events.incrementAndGet());
         testSubject.processEventsPerAggregate("Aggregate-1", 0, Long.MAX_VALUE, 0,
-                                              e -> events.incrementAndGet());
+                                              eventConsumer,
+                                              new EventStreamReadyHandler(eventConsumer));
 
         assertEquals(14, events.get());
     }

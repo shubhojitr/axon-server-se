@@ -21,10 +21,12 @@ import io.axoniq.axonserver.localstorage.Registration;
 import io.axoniq.axonserver.localstorage.SerializedEvent;
 import io.axoniq.axonserver.localstorage.SerializedEventWithToken;
 import io.axoniq.axonserver.localstorage.SerializedTransactionWithToken;
+import io.axoniq.axonserver.localstorage.file.EventStreamReadyHandler;
 import io.axoniq.axonserver.localstorage.query.QueryEventsRequestStreamObserver;
 import io.axoniq.axonserver.topology.DefaultEventStoreLocator;
 import io.axoniq.axonserver.topology.EventStoreLocator;
 import io.axoniq.axonserver.topology.Topology;
+import io.grpc.stub.CallStreamObserver;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.*;
 import org.springframework.data.util.CloseableIterator;
@@ -36,7 +38,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 import static org.junit.Assert.*;
@@ -73,14 +74,15 @@ public class HttpStreamingQueryTest {
             @Override
             public void processEventsPerAggregate(String aggregateId, long actualMinSequenceNumber,
                                                   long actualMaxSequenceNumber, long minToken,
-                                                  Consumer<SerializedEvent> eventConsumer) {
+                                                  CallStreamObserver<SerializedEvent> eventConsumer,
+                                                  EventStreamReadyHandler eventStreamReadyHandler) {
 
             }
 
             @Override
             public void processEventsPerAggregateHighestFirst(String aggregateId, long actualMinSequenceNumber,
                                                               long actualMaxSequenceNumber, int maxResults,
-                                                              Consumer<SerializedEvent> eventConsumer) {
+                                                              CallStreamObserver<SerializedEvent> eventConsumer) {
 
             }
 

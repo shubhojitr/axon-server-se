@@ -10,13 +10,14 @@
 package io.axoniq.axonserver.localstorage;
 
 import io.axoniq.axonserver.grpc.event.EventWithToken;
+import io.axoniq.axonserver.localstorage.file.EventStreamReadyHandler;
+import io.grpc.stub.CallStreamObserver;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.data.util.CloseableIterator;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
@@ -109,14 +110,18 @@ public interface EventStorageEngine {
 
 
     /**
-     * Find events for an aggregate and execute the consumer for each event. Stops when last event for aggregate is found.
-     * @param aggregateId the aggregate identifier
-     * @param minSequenceNumber the first sequence number to retrieve
-     * @param maxSequenceNumber the last sequence number to retrieve (exlusive)
-     * @param eventConsumer     the consumer to apply for each event
+     * Find events for an aggregate and execute the consumer for each event. Stops when last event for aggregate is
+     * found.
+     *
+     * @param aggregateId             the aggregate identifier
+     * @param minSequenceNumber       the first sequence number to retrieve
+     * @param maxSequenceNumber       the last sequence number to retrieve (exlusive)
+     * @param eventConsumer           the consumer to apply for each event
+     * @param eventStreamReadyHandler
      */
     void processEventsPerAggregate(String aggregateId, long minSequenceNumber, long maxSequenceNumber, long minToken,
-                                   Consumer<SerializedEvent> eventConsumer);
+                                   CallStreamObserver<SerializedEvent> eventConsumer,
+                                   EventStreamReadyHandler eventStreamReadyHandler);
 
     /**
      * Find events for an aggregate and execute the consumer for each event. The event with the highest sequence number
@@ -129,7 +134,7 @@ public interface EventStorageEngine {
      * @param eventConsumer     the consumer to apply for each event
      */
     void processEventsPerAggregateHighestFirst(String aggregateId, long minSequenceNumber, long maxSequenceNumber,
-                                               int maxResults, Consumer<SerializedEvent> eventConsumer);
+                                               int maxResults, CallStreamObserver<SerializedEvent> eventConsumer);
 
 
     /**
